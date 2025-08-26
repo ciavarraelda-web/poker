@@ -1,47 +1,49 @@
-import { Express, Request, Response } from "express";
-import { createTable, joinTable, playHand, getTableStatus } from "../poker/table";
-import { verifyPayment } from "../fee/verify";
-import { verifySubscription } from "../fee/subscription";
+import { v4 as uuid } from "uuid";
+import { Player } from "./player";
+import { playPokerHand } from "./logic";
 
-// API: abbonamento
-export function setupPokerRoutes(app: Express) {
-  app.post("/subscribe", async (req: Request, res: Response) => {
-    const { wallet, signature, reference } = req.body;
-    const ok = await verifySubscription(wallet, signature, reference);
-    res.json({ success: ok });
-  });
+export interface Table {
+  id: string;
+  owner: string;
+  minBuyIn: number;
+  maxPlayers: number;
+  players: Player[];
+  hands: any[];
+  pot: number;
+}
 
-  // crea tavolo
-  app.post("/table", (req, res) => {
-    const { owner, minBuyIn, maxPlayers } = req.body;
-    const table = createTable(owner, minBuyIn, maxPlayers);
-    res.json(table);
-  });
+const tables: Record<string, Table> = {};
 
-  // join tavolo (con verifica pagamento buyin)
-  app.post("/table/:id/join", async (req, res) => {
-    const { id } = req.params;
-    const { player, buyIn, signature, reference } = req.body;
-    const ok = await verifyPayment(player, buyIn, reference, signature);
-    if (!ok) return res.status(400).json({ error: "Payment not found or invalid" });
-    const joined = joinTable(id, player, buyIn);
-    res.json({ success: joined });
-  });
+export function createTable(owner: string, minBuyIn: number, maxPlayers: number): Table {
+  const id = uuid();
+  tables[id] = {
+    id,
+    owner,
+    minBuyIn,
+    maxPlayers,
+    players: [],
+    hands: [],
+    pot: 0,
+  };
+  return tables[id];
+}
 
-  // gioca mano
-  app.post("/table/:id/play", async (req, res) => {
-    const { id } = req.params;
-    const { moves, feeSignature, feeReference } = req.body;
-    // verifica fee pagata
-    const feeOk = await verifyPayment("any", 0, feeReference, feeSignature, "fee");
-    if (!feeOk) return res.status(400).json({ error: "Fee payment missing" });
-    const result = await playHand(id, moves);
-    res.json(result);
-  });
+export function joinTable(id: string, playerWallet: string, buyIn: number): boolean {
+  const table = tables[id];
+  if (!table || table.players.length >= table.maxPlayers || buyIn < table.minBuyIn) return false;
+  table.players.push({ id: playerWallet, buyIn, stack: buyIn });
+  table.pot += buyIn;
+  return true;
+}
 
-  app.get("/table/:id", (req, res) => {
-    const { id } = req.params;
-    const status = getTableStatus(id);
-    res.json(status);
-  });
+export async function playHand(id: string, moves: any[]): Promise<any> {
+  const table = tables[id];
+  if (!table) return { error: "Table not found" };
+  const result = playPokerHand(table.players, moves);
+  table.hands.push(result);
+  return { ...result, pot: table.pot, tableId: id, losers: table.players.filter(p => p.id !== result.winner).map(p => p.id) };
+}
+
+export function getTableStatus(id: string) {
+  return tables[id] || null;
 }
